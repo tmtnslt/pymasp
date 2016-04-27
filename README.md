@@ -17,10 +17,14 @@ pymasp is designed to be able to perform a wide variety of (spectropscopic) expe
 In a (spectroscopic) experiment, data from one or more detectors is recorded as a function of one or more experimental conditions (parameters). A simple experiment might be the subsequential recording of data from the same detector under the same conditions (repeat), recording of data at predefined parameter values (list) or recording of data at a range of parameter values (iterator). Experiments using a range of parameter values might be recorded in a looping, a bouncing or random varietion of values, or might be a complex nesting of all cases.
 
 To accompany the demands of this abstract definition of an experiment, pymasp works a queue of experiments, where experiments are a tree structure consisting of:
+
 Jobs:
+
 - Encapsulating elements (Iterators, Lists, Loops, ...)
 - Detectors (Spectrometers, Cameras, Oscilloscopes, ...)
+
 Parameters:
+
 - Motorized Linear Stages, Mirrors, Irises, Drivers ...
 
 For example one experiment might consist of an iterator, that controls a linear stage over a 100 positions between -1 and +1 mm and for every step records one image from a camera.
@@ -31,7 +35,7 @@ Experiments can be duplicated, saved and loaded for reuse.
 
 ### API documentation
 
-### pymasp-journal: Database backend.
+### pymasp-journal: Database backend
 
 
 ## pymasp-web
@@ -40,16 +44,21 @@ pymasp-web is a Flask web-application that provides a Web-GUI via http. It will 
 
 ## Roadmap
 POC:
+
 - Complete this README
 - Complete preliminary API
 - Write a test suite for the API
 - Bootstrap the pymasp-journal
 - Bootstrap pymasp-web
+ 
 Alpha:
+
 - Complete pymasp-journal
 - Add some real world devices
 - Provide documentation on how to add new devices
+ 
 Beta:
+
 - Reach feature level of old "Scan Programm"
 - Complete pymasp-web
 - Bootstrap pymasp-qt
