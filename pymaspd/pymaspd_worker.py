@@ -1,7 +1,9 @@
 import asyncio
-
+import logging
 import pymJournal
-from pymJob import LOG, pymJob
+import pymException
+
+from pymJob import pymJob
 
 
 class pymaspd_worker:
@@ -26,7 +28,7 @@ class pymaspd_worker:
         Unroll the JobList to display and edit it.
         :return: [JobDictionary]
         """
-        LOG.debug("Unrolling list")
+        logging.debug("Unrolling list")
         return [self.genjobdictionary(job) for job in self.joblist]
 
     def genjobdictionary(self, job):
@@ -41,22 +43,22 @@ class pymaspd_worker:
         :param pynJob:
         :return:
         """
-        LOG.debug("Generating Entry for Job %s", job)
+        logging.debug("Generating Entry for Job %s", job)
         if job is not None and isinstance(job, pymJob):
             try:
                 # ask the Job element on the list to give us its description an child elements
                 description, subjob = job.description()
-                LOG.debug("Got description and subjob list")
+                logging.debug("Got description and subjob list")
             except AttributeError:
                 # couldn't call description(), maybe it's not a Job? Return an empty element.
                 return {"type": None, "description": None, "child": None, "mutable": False, "running": False}
 
             answ_dict = {"type": type(job).__name__, "description": description, "child": [self.genjobdictionary(sj) for sj in subjob], "mutable": job.ismutable(), "running": job.isrunning(), "id": job.jobid}
-            LOG.debug("Reply dict: {}".format(answ_dict))
+            logging.debug("Reply dict: {}".format(answ_dict))
 
             return answ_dict
         else:
-            LOG.debug("Element is not a valid Job or list is empty")
+            logging.debug("Element is not a valid Job or list is empty")
             return {}
 
     def id2job(self, id):
@@ -109,11 +111,11 @@ class pymaspd_worker:
                     # tell it directly to insert newjob
                     return refjob.appendJob(newjob)
                 else:
-                    LOG.warning("Can't insert Job into non mutable")
-                    return False
+                    logging.warning("Can't insert Job into non mutable")
+                    raise pymException.pymJobNonMutable
             else:
-                LOG.warning("Referenced Job does not exist")
-                return False
+                logging.warning("Referenced Job does not exist")
+                raise pymException.pymJobNotFound
 
     def deletejob(self, refjob):
         """
@@ -126,10 +128,10 @@ class pymaspd_worker:
 
         #sanitize
         if refjob is None or not isinstance(refjob, pymJob):
-            LOG.warning("Referenced Job does not exist")
+            logging.warning("Referenced Job does not exist")
             return False
         if refjob.isrunning():
-            LOG.warning("Can't delete running job")
+            logging.warning("Can't delete running job")
             return False
         for job in self.joblist:
             if job is refjob:
@@ -141,7 +143,7 @@ class pymaspd_worker:
                 if job.deleteJob(refjob):
                     return True
         # None of the above, issue a warning
-        LOG.warning("Referenced Job not found")
+        logging.warning("Referenced Job not found")
         return False
 
     def insertjobafterref(self, newjob, refjob):
@@ -153,7 +155,7 @@ class pymaspd_worker:
         """
 
         if refjob is None or not isinstance(refjob, pymJob):
-            LOG.warning("Referenced Job does not exist")
+            logging.warning("Referenced Job does not exist")
             return False
         for job in self.joblist:
             if job is refjob:
@@ -165,7 +167,7 @@ class pymaspd_worker:
                 if job.insertjobafter(newjob, refjob):
                     return True
         # None of the above, issue a warning
-        LOG.warning("Referenced Job not found")
+        logging.warning("Referenced Job not found")
         return False
 
     def updatejob(self, refjob, *args):
@@ -176,7 +178,7 @@ class pymaspd_worker:
         :return: boolean success
         """
         if refjob is None or not isinstance(refjob, pymJob):
-            LOG.warning("Referenced Job does not exist")
+            logging.warning("Referenced Job does not exist")
             return False
 
         return refjob.updatejob(*args)
@@ -188,7 +190,7 @@ class pymaspd_worker:
         :return: settings_dict
         """
         if refjob is None or not isinstance(refjob, pymJob):
-            LOG.warning("Referenced Job does not exist")
+            logging.warning("Referenced Job does not exist")
             return False
 
         return refjob.getsettings()
@@ -200,38 +202,38 @@ class pymaspd_worker:
         :return:
         """
         if refjob is None or not isinstance(refjob, pymJob):
-            LOG.warning("Referenced Job does not exist")
+            logging.warning("Referenced Job does not exist")
             return False
         if refjob.isrunning():
-            LOG.warning("Can't move currently running job")
+            logging.warning("Can't move currently running job")
             return False
         for job in self.joblist:
             if job is refjob:
                 index = self.joblist.index(job)
                 if (index+n)<0 or (index+n)>len(self.joblist):
-                    LOG.warning("Supplied index out of bounds")
+                    logging.warning("Supplied index out of bounds")
                     return False
                 if self.joblist[index+n].istrunning():
-                    LOG.warning("Can't mutate with running job")
+                    logging.warning("Can't mutate with running job")
                     return False
                 # try to remove job from list
                 res = self.joblist.remove(job)
                 if not res:
-                    LOG.warning("Couldn't move job")
+                    logging.warning("Couldn't move job")
                     return False
                 # now insert the job at the new position
                 res = self.joblist.insert(index+n, job)
                 if res:
                     return True
                 else:
-                    LOG.warning("Couldn't reinsert job")
+                    logging.warning("Couldn't reinsert job")
                     return False
             # check if job could be in sublist
             elif job.ismutable():
                 if job.movejob(refjob, n):
                     return True
         # loop finished without finding the reference
-        LOG.warning("Referenced Job not found")
+        logging.warning("Referenced Job not found")
         return False
 
     """
@@ -244,9 +246,9 @@ class pymaspd_worker:
         :return:
         """
         try:
-            LOG.debug("Looking for a job...")
+            logging.debug("Looking for a job...")
             if len(self.joblist)==0 or self.paused:
-                LOG.debug("No Job, going to sleep")
+                logging.debug("No Job, going to sleep")
                 # currently no jobs, we can wait
                 await asyncio.sleep(1)
                 return

@@ -1,20 +1,20 @@
 import pickle
-
+import json
 import zmq
 import zmq.asyncio
 
 from pymaspd_worker import pymaspd_worker
 from pymParameter import *
 
+import pymException
+
 # configure which detectors you want to use
 # configure which parameters (stages etc.) you want to use
 # configure which other jobs (kinds of loops) you want to use
 # (probably safe to leave them all enabled)
 
-LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG)
-LOG.addHandler(logging.StreamHandler())
-
+logging.basicConfig(level=logging.DEBUG)
+PYTHONASYNCIODEBUG=1
 
 class pymaspd:
     """
@@ -50,11 +50,13 @@ class pymaspd:
 
 
     def createjob(self,job,ref=None):
-        LOG.debug("Use the Factory to create Job")
-        newjob = pynJobFactory.createJob(job, self.job_counter)
-        # increase job_counter to give unique ids.
-        self.job_counter += 1
-        LOG.debug("Append the Job to our Joblist")
+        logging.debug("Use the Factory to create Job")
+        try:
+            newjob = pymJobFactory.createJob(job, self.job_counter)
+        finally:
+            # always increase job_counter to give unique ids.
+            self.job_counter += 1
+        logging.debug("Append the Job to our Joblist")
         # for now appendjob will return True or False on success. Consider returning a weakref in future versions.
         return self.worker.appendjob(newjob, ref)
 
@@ -78,26 +80,35 @@ class pymaspd:
     async def rpc_loop(self):
         #initialize connection
         sock = self.context.socket(zmq.REP)
-        LOG.debug("Trying to bind to socket")
+        logging.debug("Trying to bind to socket")
         sock.bind(self.rpc_addr)
-        LOG.debug("Socket Opened, awaiting message")
+        logging.debug("Socket Opened, awaiting message")
         while not self.shutdown:
             # we are only communicating with a python frontend, so pyobj will be used
             # if you want to change this, you have to take care of serialization!
 
             # wait for messages
-            LOG.debug("Wait for message")
-            msg = await sock.recv()
-            LOG.debug("Received Message from RPC, going to process")
-
+            try:
+                logging.debug("Wait for message")
+                msg = await sock.recv()
+                # For some reason we can't await sock.recv_json(). Therefore: Call recv and decode JSON by hand
+                # Consider moving this logic to process_rpc...
+                if isinstance(msg, bytes):
+                    msg = msg.decode('utf8')
+                msg = json.loads(msg)
+            except Exception as exc:
+                # Dangerous! We should rather do exception handling for seperate cases: zmq errors and json errors.
+                logging.debug("Error in receiving Message: %s" % exc)
+                raise
+            logging.debug("Received Message from RPC, going to process")
             # process directly
-            reply = self.process_rpc(pickle.loads(msg))
-            LOG.debug("Processing of RPC Message done, going to send reply")
+            reply = self.process_rpc(msg)
+            logging.debug("Processing of RPC Message done, going to send reply")
 
             if reply:
                 # response can be slow
-                await sock.send_pyobj(reply)
-                LOG.debug("RPC Message send, returning to start of loop")
+                await sock.send_json(reply)
+                logging.debug("RPC Message send, returning to start of loop")
 
         #socket was closed, complete this task
 
@@ -108,6 +119,7 @@ class pymaspd:
         :param msg:
         :return:
         """
+        logging.debug(msg)
         reply = {}
 
         """
@@ -137,11 +149,21 @@ class pymaspd:
 
         # add new job
         if "add_job_new" in msg:
-            LOG.debug("Creating New Job")
-            print(pymJob.__subclasses__())
-            if self.createjob(msg["add_job_new"]):
-                LOG.debug("Succesfully Created New Job")
-                reply["add_job_new"] = 1
+            try:
+                logging.debug("Creating New Job")
+                if self.createjob(msg["add_job_new"]):
+                    logging.debug("Succesfully Created New Job")
+                    reply["add_job_new"] = True
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't add job to referenced job: reference is inmutable."
+                reply["add_job_new"] = False
+            except pymException.pymJobNotFound:
+                reply["error"] = "Referenced job not found."
+                reply["add_job_new"] = False
+            except pymException.pymJobNotExist:
+                reply["error"] = "Job can't be created: Job doesn't exist."
+                reply["add_job_new"] = False
+
 
         #TODO
 
@@ -172,7 +194,7 @@ class pymaspd:
             reply["workerpong"] = self.worker.get_version()
 
         if "shutdown" in msg:
-            LOG.debug("Received Shutdown Signal")
+            logging.debug("Received Shutdown Signal")
             self.shutdown = True
             reply["shutdown"] = "Goodbye"
         #TODO we should evaluate errors up until here and then include them in the error field

@@ -83,7 +83,7 @@ class pymIterator(pymJob):
                 # explicitly deleter job
                 del self.job
                 # create new instance of job out of factory
-                self.job = pynJobFactory.createJob(settings_dict['job'])
+                self.job = pymJobFactory.createJob(settings_dict['job'])
                 res = True
 
         if 'parameterSettings' in settings_dict:

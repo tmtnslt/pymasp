@@ -1,9 +1,5 @@
 import logging
-
-
-LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG)
-LOG.addHandler(logging.StreamHandler())
+import pymException
 
 class pymJob(object):
     """
@@ -20,7 +16,7 @@ class pymJob(object):
 
     @classmethod
     def create_job(cls, jobid):
-        LOG.debug("Factory is going to create class %s" % cls.__name__)
+        logging.debug("Factory is going to create class %s" % cls.__name__)
         return cls(jobid)
 
     def __init__(self, jobid):
@@ -64,17 +60,14 @@ class pymJob(object):
         # nop
         return True
 
-class pynJobException(Exception):
-    pass
 
-
-class pynJobFactory:
+class pymJobFactory:
     @staticmethod
     def createJob(classid, jobid):
-        LOG.debug("Checking for class %s" % classid)
+        logging.debug("Checking for class %s" % classid)
         for jobs in pymJob.__subclasses__(): # potentially harmful if one can manipulate subclasses to load malicious jobs.
             if classid == jobs.__name__:
-                LOG.debug("Success for class %s" % jobs.__name__)
+                logging.debug("Success for class %s" % jobs.__name__)
                 return jobs.create_job(jobid)
-        return None
+        raise pymException.pymJobNotExist
 
