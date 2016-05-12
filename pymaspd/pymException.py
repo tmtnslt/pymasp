@@ -11,3 +11,10 @@ class pymJobNotFound(pymJobException):
 
 class pymJobNotExist(pymJobException):
     pass
+
+class pymJobRunning(pymJobException):
+    pass
+
+
+class pymOutOfBound(pymJobException):
+    pass

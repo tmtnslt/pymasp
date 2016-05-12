@@ -51,8 +51,8 @@ def create_new_db():
                     (id INTEGER PRIMARY KEY, job_id INT, data BLOB)''')
     _cur.execute('''CREATE TABLE labbook
                     (date timestamp, note TEXT)''')
-    _cur.execute('''CREATE TABLE saved_experiments
-                    (title TEXT, pickle BLOB)''')
+#    _cur.execute('''CREATE TABLE saved_experiments
+#                    (title TEXT, pickle BLOB)''')
 
 """
 UPDATE DATABASE

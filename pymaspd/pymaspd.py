@@ -3,6 +3,9 @@ import json
 import zmq
 import zmq.asyncio
 
+import asyncio
+import logging
+
 from pymaspd_worker import pymaspd_worker
 from pymParameter import *
 
@@ -49,16 +52,33 @@ class pymaspd:
         return res
 
 
-    def createjob(self,job,ref=None):
+    def createjob(self,job):
         logging.debug("Use the Factory to create Job")
         try:
             newjob = pymJobFactory.createJob(job, self.job_counter)
         finally:
             # always increase job_counter to give unique ids.
             self.job_counter += 1
-        logging.debug("Append the Job to our Joblist")
-        # for now appendjob will return True or False on success. Consider returning a weakref in future versions.
-        return self.worker.appendjob(newjob, ref)
+        return newjob
+
+    def unpicklejob(self,pickeld_job):
+        """
+        Unpickles a job to load saved experiments. Warning: This is currently unrestricted and allows for
+        remote code execution!
+        :param pickeld_job:
+        :return:
+        """
+        try:
+            newjob = pickle.loads(pickeld_job)
+        except pickle.UnpicklingError:
+            logging.warning("Couldn't load job from pickle")
+            raise pymException.pymJobNotExist
+        if isinstance(newjob, pymJob):
+            return newjob
+        else:
+            raise pymException.pymJobNotExist
+
+
 
     def main_loop(self):
         # set the context for zmq
@@ -84,13 +104,12 @@ class pymaspd:
         sock.bind(self.rpc_addr)
         logging.debug("Socket Opened, awaiting message")
         while not self.shutdown:
-            # we are only communicating with a python frontend, so pyobj will be used
-            # if you want to change this, you have to take care of serialization!
-
             # wait for messages
             try:
                 logging.debug("Wait for message")
                 msg = await sock.recv()
+                # Currently we are using json to communicate on the protocol level and then we maybe will
+                # have a pickle as payload.
                 # For some reason we can't await sock.recv_json(). Therefore: Call recv and decode JSON by hand
                 # Consider moving this logic to process_rpc...
                 if isinstance(msg, bytes):
@@ -145,15 +164,49 @@ class pymaspd:
             reply["parameter_list"] = self.list_available_parameters()
 
         # manipulate queue
-        #TODO
+        if "move_job" in msg:
+            try:
+                # obtain reference to instance
+                logging.debug("Trying to move Job")
+                reply["move_job"] = self.worker.movejob(self.worker.id2job(msg["move_job"][0]),msg["move_job"][1])
+                logging.debug("Moved Job")
+            except pymException.pymJobRunning:
+                reply["error"] = "Can't move running job or swap with one"
+                reply["move_job"] = False
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't move job, it is immutable."
+                reply["move_job"] = False
+            except pymException.pymJobNotFound:
+                reply["error"] = "Referenced job not found."
+                reply["move_job"] = False
+            except pymException.pymJobNotExist:
+                reply["error"] = "Job doesn't exist."
+                reply["move"] = False
+            except AttributeError:
+                reply["error"] = "Supplied parameter out of bounds"
+                reply["move"] = False
 
-        # add new job
+        # add new job to end of some list
         if "add_job_new" in msg:
             try:
+                tref = None
                 logging.debug("Creating New Job")
-                if self.createjob(msg["add_job_new"]):
-                    logging.debug("Succesfully Created New Job")
-                    reply["add_job_new"] = True
+                if len(msg["add_job_new"])==2:
+                    # reference supplied, add it there
+                    try:
+                        # obtain referenced job instance
+                        tref = self.worker.id2job(msg["add_job_new"][1])
+                    except pymException.pymJobNotFound:
+                        reply["error"] = "Couldn't find reference to add Job to."
+                        reply["add_job_new"] = False
+                if "add_job_new" not in reply:
+                    tjob = self.createjob(msg["add_job_new"][0])
+                    if tjob is not None:
+                        logging.debug("Succesfully Created New Job")
+                        # now try to attatch the job somewhere
+                        if self.worker.appendjob(tjob,tref):
+                            logging.debug("Succesfully Added Job To List")
+                            reply["add_job_new"] = True
             except pymException.pymJobNonMutable:
                 reply["error"] = "Can't add job to referenced job: reference is inmutable."
                 reply["add_job_new"] = False
@@ -164,20 +217,237 @@ class pymaspd:
                 reply["error"] = "Job can't be created: Job doesn't exist."
                 reply["add_job_new"] = False
 
+        # add new job after a referenced job
+        if "add_job_new_after" in msg:
+            try:
+                logging.debug("Creating New Job")
+                if len(msg["add_job_new_after"])==2:
+                    try:
+                        # obtain referenced job instance
+                        tref = self.worker.id2job(msg["add_job_new_after"][1])
+                    except pymException.pymJobNotFound:
+                        reply["error"] = "Couldn't find reference to add Job to."
+                        reply["add_job_new_after"] = False
+                    else:
+                        # only create job if we found that reference
+                        tjob = self.createjob(msg["add_job_new_after"][0])
+                        logging.debug("Succesfully Created New Job")
+                        if (self.worker.insertjobafterref(tjob,tref)):
+                            logging.debug("Succesfully Added Job after Reference")
+                            reply["add_job_new_after"] = True
 
-        #TODO
+                else:
+                    # someone made a mistake
+                    reply["error"] = "Protocol Error"
+                    reply["add_job_new_after"] = False
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't add job to referenced job: reference is inmutable."
+                reply["add_job_new_after"] = False
+            except pymException.pymJobNotFound:
+                reply["error"] = "Referenced job not found."
+                reply["add_job_new_after"] = False
+            except pymException.pymJobNotExist:
+                reply["error"] = "Job can't be created: Job doesn't exist."
+                reply["add_job_new_after"] = False
+
+        # add a pickled job at the end of a list
+        if "add_job_pickle" in msg:
+            try:
+                tref = None
+                logging.debug("Unpickle Job")
+                if len(msg["add_job_pickle"])==2:
+                    # reference supplied, add it there
+                    try:
+                        # obtain referenced job instance
+                        tref = self.worker.id2job(msg["add_job_pickle"][1])
+                    except pymException.pymJobNotFound:
+                        reply["error"] = "Couldn't find reference to add Job to."
+                        reply["add_job_pickle"] = False
+                        tjob = None
+                if not "add_job_pickle" in reply:
+                    # no errors so far
+                    tjob = self.unpicklejob(msg["add_job_pickle"][0])
+                    if tjob is not None:
+                        logging.debug("Succesfully Unpickled Job")
+                        # now try to attatch the job somewhere
+                        if self.worker.appendjob(tjob,tref):
+                            logging.debug("Succesfully Added Job To List")
+                            reply["add_job_pickle"] = True
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't add job to referenced job: reference is inmutable."
+                reply["add_job_pickle"] = False
+            except pymException.pymJobNotFound:
+                reply["error"] = "Referenced job not found."
+                reply["add_job_pickle"] = False
+            except pymException.pymJobNotExist:
+                reply["error"] = "Job can't be created: Job doesn't exist."
+                reply["add_job_pickle"] = False
+
+        # add a pickled job after a referenced job
+        if "add_job_pickle_after" in msg:
+            try:
+                logging.debug("Unpickle Job")
+                if len(msg["add_job_pickle_after"])==2:
+                    try:
+                        # obtain referenced job instance
+                        tref = self.worker.id2job(msg["add_job_pickle_after"][1])
+                    except pymException.pymJobNotFound:
+                        reply["error"] = "Couldn't find reference to add Job to."
+                        reply["add_job_pickle_after"] = False
+                    else:
+                        # only create job if we found that reference
+                        tjob = self.unpicklejob(msg["add_job_pickle_after"][0])
+                        logging.debug("Succesfully Unpickled Job")
+                        if (self.worker.insertjobafterref(tjob,tref)):
+                            logging.debug("Succesfully Added Job after Reference")
+                            reply["add_job_pickle_after"] = True
+
+                else:
+                    # someone made a mistake
+                    reply["error"] = "Protocol Error"
+                    reply["add_job_pickle_after"] = False
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't add job to referenced job: reference is inmutable."
+                reply["add_job_pickle_after"] = False
+            except pymException.pymJobNotFound:
+                reply["error"] = "Referenced job not found."
+                reply["add_job_pickle_after"] = False
+            except pymException.pymJobNotExist:
+                reply["error"] = "Job can't be created: Job doesn't exist."
+                reply["add_job_pickle_after"] = False
+
+
+
+        # delete job
+        if "delete_job" in msg:
+            try:
+                logging.debug("Getting Reference to Job")
+                tjob = self.worker.id2job(msg["delete_job"])
+                reply["delete_job"] = self.worker.deletejob(tjob)
+            except (pymException.pymJobNotFound, pymException.pymJobNotExist):
+                reply["error"] = "Can't delete job: Referenced Job not Found!"
+                reply["delete_job"] = False
+            except pymException.pymJobRunning:
+                reply["error"] = "Can't delete job: Job is currently running!"
+                reply["delete_job"] = False
+            except pymException.pymJobNonMutable:
+                reply["error"] = "Can't delete job: Parent Job marks it as inmutable."
+                reply["delete_job"] = False
+
+
+        if "get_settings" in msg:
+            try:
+                tref = self.worker.id2job(msg["get_settings"])
+                reply["get_settings"] = tref.getsettings()
+            except (pymException.pymJobNotFound, pymException.pymJobNotExist):
+                reply["error"] = "Can't get settings: Referenced Job not Found!"
+                reply["get_settings"] = False
+            except pymException.pymJobRunning:
+                reply["error"] = "Can't get settings: Job is currently running!"
+                reply["get_settings"] = False
+            except NotImplementedError:
+                reply["error"] = "Can't get settings: Job has no settings!"
+                reply["get_settings"] = False
+
+        if "update_settings" in msg:
+            try:
+                tref = self.worker.id2job(msg["update_settings"][0])
+                reply["update_settings"] = tref.updatejob(msg["update_settings"][1])
+            except (pymException.pymJobNotFound, pymException.pymJobNotExist):
+                reply["error"] = "Can't set settings: Referenced Job not Found!"
+                reply["get_settings"] = False
+            except pymException.pymJobRunning:
+                reply["error"] = "Can't set settings: Job is currently running!"
+                reply["get_settings"] = False
+            except pymException.pymOutOfBound:
+                reply["error"] = "Can't set settings: Parameter out of bound!"
+                reply["get_settings"] = False
+            except NotImplementedError:
+                reply["error"] = "Can't set settings: Job has no settings!"
+                reply["get_settings"] = False
+            except (AttributeError, TypeError):
+                reply["error"] = "Can't set settings: Faulty settings supplied!"
+                reply["get_settings"] = False
+            except IndexError:
+                reply["error"] = "Can't set settings: Faulty settings supplied!"
+                reply["get_settings"] = False
 
         # pickle existing job
-        #TODO
-
-        # unpickle transfered job
-        #TODO
+        if "save_job" in msg:
+            try:
+                logging.debug("Saving Job as a pickle")
+                tjob = self.worker.id2job(msg["save_job"])
+            except (pymException.pymJobNotFound, pymException.pymJobNotExist):
+                reply["error"] = "Can't save job: Referenced Job not Found!"
+            else:
+                try:
+                    reply["save_job"] = pickle.dumps(tjob)
+                except pickle.PickleError as err:
+                    reply["error"] = "Job can't be pickled. Ask a developer."
+                    logging.warning("Couldn't pickle job %s: %s" % (tjob, err))
+                    reply["save_job"] = False
 
         """
         Journal related commands
         """
 
-        #TODO
+        if "create_new_database" in msg:
+            """
+            Creates new database file and uses it, requires main loop to be stopped
+            """
+            pass
+
+        if "load_database" in msg:
+            """
+            Loads an existing database file and uses it, requires main loop to be stopped
+            """
+            pass
+
+        if "archive_database" in msg:
+            """
+            Transform existing database to long term storage file, requires main loop to be stopped
+            """
+            pass
+
+        if "delete_database" in msg:
+            """
+            Delete database file on disk. Requires main loop to be stopped and a flag to be set in the pymaspd settings
+            """
+            pass
+
+        if "list_experiments" in msg:
+            """
+            Return a list of experiments from the current database
+            """
+            pass
+
+        if "list_jobs" in msg:
+            """
+            Return a list of all jobs from the current database. Expert option, requires a flag to be set in the pymaspd settings
+            """
+            pass
+
+        if "get_1d_data" in msg:
+            """
+            Try to obtain a 1d representation of data associated with supplied job/experiment
+            """
+            pass
+
+        if "get_2d_data" in msg:
+            """
+            Try to obtain a 2d representation of data associated with supplied job/experiment
+            """
+            pass
+
+        if "get_full_data" in msg:
+            """
+            Try to obtain all data associated with supplied job/experiment and return it as raw as possible
+            """
+            pass
+
+
+
+        #TODO: Labbook functions...
 
         """
         Daemon related commands

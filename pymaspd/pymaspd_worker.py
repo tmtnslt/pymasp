@@ -73,7 +73,8 @@ class pymaspd_worker:
                 tjob = self._traverse_id2job(job, id)
                 if tjob is not None:
                     return tjob
-        return None
+        logging.warning("Referenced Job does not exist")
+        raise pymException.pymJobNotFound
 
     def _traverse_id2job(self,job_ref, id):
         """
@@ -109,7 +110,7 @@ class pymaspd_worker:
                 if refjob.ismutable:
                     # since we directly call refjob, we don't need to walk any lists, but can
                     # tell it directly to insert newjob
-                    return refjob.appendJob(newjob)
+                    return refjob.appendjob(newjob)
                 else:
                     logging.warning("Can't insert Job into non mutable")
                     raise pymException.pymJobNonMutable
@@ -129,12 +130,13 @@ class pymaspd_worker:
         #sanitize
         if refjob is None or not isinstance(refjob, pymJob):
             logging.warning("Referenced Job does not exist")
-            return False
+            raise pymException.pymJobNotExist
         if refjob.isrunning():
             logging.warning("Can't delete running job")
-            return False
+            raise pymException.pymJobRunning
         for job in self.joblist:
             if job is refjob:
+                # We're only checking our main list here, which is always mutable, so no need to check!
                 # Found job in main list, delete it from here
                 self.joblist.remove(job)
                 return True
@@ -144,7 +146,7 @@ class pymaspd_worker:
                     return True
         # None of the above, issue a warning
         logging.warning("Referenced Job not found")
-        return False
+        raise pymException.pymJobNotFound
 
     def insertjobafterref(self, newjob, refjob):
         """
@@ -203,19 +205,20 @@ class pymaspd_worker:
         """
         if refjob is None or not isinstance(refjob, pymJob):
             logging.warning("Referenced Job does not exist")
-            return False
+            raise pymException.pymJobNotExist
         if refjob.isrunning():
             logging.warning("Can't move currently running job")
-            return False
+            raise pymException.pymJobRunning
         for job in self.joblist:
+            # Our own list will always be mutable, but sublists will have to test for mutability!
             if job is refjob:
                 index = self.joblist.index(job)
                 if (index+n)<0 or (index+n)>len(self.joblist):
                     logging.warning("Supplied index out of bounds")
-                    return False
+                    raise AttributeError
                 if self.joblist[index+n].istrunning():
                     logging.warning("Can't mutate with running job")
-                    return False
+                    raise pymException.pymJobRunning
                 # try to remove job from list
                 res = self.joblist.remove(job)
                 if not res:
@@ -234,7 +237,7 @@ class pymaspd_worker:
                     return True
         # loop finished without finding the reference
         logging.warning("Referenced Job not found")
-        return False
+        raise pymException.pymJobNotFound
 
     """
     Main Loop
